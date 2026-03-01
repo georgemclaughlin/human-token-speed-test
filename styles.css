@@ -22,6 +22,7 @@ body {
   color: var(--text-0);
   background: var(--bg-0);
   min-height: 100vh;
+  overflow-x: hidden;
 }
 
 body::before {
@@ -34,8 +35,10 @@ body::before {
 }
 
 .app-shell {
-  width: min(1120px, 94vw);
+  width: 100%;
+  max-width: 1120px;
   margin: 0.75rem auto 1rem;
+  padding: 0 0.5rem;
   display: grid;
   gap: 0.55rem;
   position: relative;
@@ -171,6 +174,7 @@ button:hover:enabled {
   justify-content: space-between;
   gap: 1rem;
   overflow: hidden;
+  min-width: 0;
 }
 
 .runtime-left {
@@ -205,6 +209,7 @@ button:hover:enabled {
   line-height: 1.35;
   font-size: 0.86rem;
   overflow: hidden;
+  min-width: 0;
 }
 
 .share-btn {
@@ -252,6 +257,7 @@ button:hover:enabled {
 
 .editor {
   overflow: hidden;
+  min-width: 0;
 }
 
 .editor-chrome {
@@ -297,6 +303,7 @@ button:hover:enabled {
   height: 320px;
   padding: 0.5rem;
   background: #0f1724;
+  min-width: 0;
 }
 
 .editor.results-fit .editor-body {
@@ -335,6 +342,7 @@ textarea:disabled {
   display: grid;
   grid-template-rows: auto auto;
   gap: 0.45rem;
+  min-width: 0;
 }
 
 .token-highlight {
@@ -401,6 +409,19 @@ textarea:disabled {
 }
 
 @media (max-width: 900px) {
+  .app-shell {
+    margin: 0.5rem auto 0.75rem;
+  }
+
+  .topbar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .tokenizer-caption {
+    white-space: normal;
+  }
+
   .metrics {
     height: auto;
     grid-template-columns: 1fr;
@@ -429,5 +450,16 @@ textarea:disabled {
 
   .editor.results-fit .editor-body {
     height: auto;
+  }
+}
+
+@media (max-width: 520px) {
+  .control-group {
+    gap: 0.45rem;
+  }
+
+  select,
+  button {
+    max-width: 100%;
   }
 }
