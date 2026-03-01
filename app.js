@@ -12,6 +12,7 @@ const prompts = [
 ];
 
 const modeEl = document.getElementById("mode");
+const shareEl = document.getElementById("share");
 const resetEl = document.getElementById("reset");
 const metricTpsEl = document.getElementById("metric-tps");
 const metricTokensEl = document.getElementById("metric-tokens");
@@ -39,6 +40,7 @@ let rafId = 0;
 let previousValue = "";
 let insertedTokenOps = 0;
 let deletedTokenOps = 0;
+let lastShareText = "";
 const utf8Encoder = new TextEncoder();
 
 function setStatus(message, isError = false) {
@@ -112,6 +114,10 @@ function clearResults() {
   runtimeEl.classList.remove("results-mode");
 
   resetPrimaryMetrics();
+  shareEl.disabled = true;
+  shareEl.textContent = "📋 Share Results";
+  shareEl.classList.add("hidden");
+  lastShareText = "";
   inputHighlightEl.textContent = "";
   tokenIdRowEl.textContent = "";
   hideTokenTooltip();
@@ -121,6 +127,53 @@ function clearResults() {
   tokenIdRowEl.style.height = "";
   inputHighlightWrapEl.classList.add("hidden");
   typingEl.classList.remove("hidden");
+}
+
+async function copyToClipboard(text) {
+  if (navigator.clipboard && window.isSecureContext) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.setAttribute("readonly", "");
+  ta.style.position = "absolute";
+  ta.style.left = "-9999px";
+  document.body.appendChild(ta);
+  ta.select();
+  document.execCommand("copy");
+  document.body.removeChild(ta);
+}
+
+function buildShareText(tps, finalTokens, cpm, tokenOps, opsPerSec) {
+  const modeLabel = selectedMode === "copy" ? "copy-text" : "free-typing";
+  return [
+    "🚀 Human Token Benchmarker",
+    `⚡ Tokens/s: ${formatFloat(tps)} | 🧱 Total tokens: ${finalTokens} | ✍️ Characters/minute: ${formatFloat(cpm, 0)}`,
+    `Mode: ${modeLabel} | Tokenizer: o200k_base | Duration: 20s`,
+    "🔗 https://georgemclaughlin.github.io/human-token-speed-test/",
+  ].join("\n");
+}
+
+async function handleShareClick() {
+  if (!lastShareText) {
+    return;
+  }
+
+  try {
+    await copyToClipboard(lastShareText);
+    shareEl.textContent = "Copied";
+    setTimeout(() => {
+      shareEl.textContent = "📋 Share Results";
+    }, 1400);
+  } catch (error) {
+    console.error(error);
+    shareEl.textContent = "Copy Failed";
+    setTimeout(() => {
+      shareEl.textContent = "📋 Share Results";
+    }, 1800);
+  }
 }
 
 function renderTokenHighlight(tokenIds) {
@@ -233,11 +286,11 @@ function fitResultEditorToContent() {
   inputHighlightEl.style.height = "auto";
   tokenIdRowEl.style.height = "auto";
 
-  const viewportCap = Math.floor(window.innerHeight * 0.62);
+  const viewportCap = Math.floor(window.innerHeight * 0.74);
   const highlightMin = 72;
-  const highlightMax = Math.max(260, viewportCap - 120);
+  const highlightMax = Math.max(300, viewportCap - 120);
   const idsMin = 34;
-  const idsMax = 120;
+  const idsMax = Math.max(180, Math.floor(viewportCap * 0.45));
 
   const highlightTarget = Math.min(
     Math.max(inputHighlightEl.scrollHeight + 2, highlightMin),
@@ -299,16 +352,19 @@ function finishRun() {
   const cpm = (finalChars / DURATION_SEC) * 60;
   const tokenOps = insertedTokenOps + deletedTokenOps;
   const opsPerSec = tokenOps / DURATION_SEC;
+  lastShareText = buildShareText(tps, finalTokens, cpm, tokenOps, opsPerSec);
+  shareEl.disabled = false;
+  shareEl.classList.remove("hidden");
 
   metricTpsEl.textContent = formatFloat(tps);
   metricTokensEl.textContent = String(finalTokens);
   metricCpmEl.textContent = formatFloat(cpm, 0);
 
   timerLabelEl.textContent = "Final result";
-  timerEl.textContent = `${formatFloat(tps)} t/s`;
+  timerEl.textContent = `${formatFloat(tps)} tokens/s`;
   statusEl.innerHTML =
-    `<span class="result-line"><strong>Run complete.</strong> ${finalTokens} final tokens in 20s.</span>` +
-    `<span class="result-line"><strong>Editing token ops:</strong> ${tokenOps} (${formatFloat(opsPerSec)} ops/s, inserts + deletes).</span>`;
+    `<span class="result-line"><strong>Run complete.</strong> You produced ${finalTokens} final tokens in 20 seconds.</span>` +
+    `<span class="result-line"><strong>Pace snapshot:</strong> ${formatFloat(cpm, 0)} characters/minute at ${formatFloat(tps)} tokens/s using o200k_base.</span>`;
   statusEl.classList.remove("error");
   runtimeEl.classList.add("results-mode");
 
@@ -375,6 +431,7 @@ modeEl.addEventListener("change", () => {
   syncModeUI();
 });
 
+shareEl.addEventListener("click", handleShareClick);
 resetEl.addEventListener("click", resetRun);
 typingEl.addEventListener("input", handleInput);
 inputHighlightWrapEl.addEventListener("mousemove", handleTokenHoverMove);

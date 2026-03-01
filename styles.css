@@ -20,10 +20,17 @@ body {
   margin: 0;
   font-family: "Space Grotesk", sans-serif;
   color: var(--text-0);
-  background:
-    radial-gradient(1000px 400px at 10% -20%, #23395a 0%, transparent 65%),
-    radial-gradient(800px 300px at 90% -10%, #1d2f49 0%, transparent 60%),
-    var(--bg-0);
+  background: var(--bg-0);
+  min-height: 100vh;
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(1200px 420px at 50% -240px, #223652 0%, transparent 62%);
+  z-index: 0;
 }
 
 .app-shell {
@@ -31,6 +38,8 @@ body {
   margin: 0.75rem auto 1rem;
   display: grid;
   gap: 0.55rem;
+  position: relative;
+  z-index: 1;
 }
 
 .panel {
@@ -74,6 +83,15 @@ body {
   border: 1px solid var(--border);
   padding: 0.1rem 0.35rem;
   border-radius: 5px;
+}
+
+.tokenizer-caption a {
+  color: #8ecbff;
+  text-decoration: none;
+}
+
+.tokenizer-caption a:hover {
+  text-decoration: underline;
 }
 
 .controlbar {
@@ -161,6 +179,15 @@ button:hover:enabled {
   min-width: 210px;
 }
 
+.runtime-right {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.65rem;
+  min-width: 0;
+  width: 100%;
+}
+
 .runtime-label {
   color: var(--text-1);
   font-size: 0.82rem;
@@ -180,12 +207,18 @@ button:hover:enabled {
   overflow: hidden;
 }
 
+.share-btn {
+  white-space: nowrap;
+  padding: 0.38rem 0.62rem;
+}
+
 .runtime-details.error {
   color: var(--warn);
 }
 
 .runtime.results-mode .runtime-details {
   color: #c8d6e8;
+  font-size: 0.95rem;
 }
 
 .runtime.results-mode .runtime-details .result-line {
@@ -324,8 +357,7 @@ textarea:disabled {
 .token-id-row {
   margin: 0;
   min-height: 46px;
-  max-height: 68px;
-  overflow: auto;
+  overflow: hidden;
   border: 1px solid var(--border);
   border-radius: 10px;
   background: #0b1220;
@@ -378,6 +410,13 @@ textarea:disabled {
     height: auto;
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .runtime-right {
+    width: 100%;
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 0.45rem;
   }
 
   .runtime.results-mode .runtime-details .result-line {

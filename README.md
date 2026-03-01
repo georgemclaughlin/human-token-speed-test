@@ -23,3 +23,9 @@ python3 -m http.server 8080
 Then open `http://localhost:8080`.
 
 Note: The page loads tokenizer assets from CDN at runtime.
+
+## Cache Busting (Deploys)
+When you deploy updates, bump the version token in `index.html` (currently `2026-03-01-1`) so browsers fetch fresh assets:
+- `favicon.svg?v=...`
+- `styles.css?v=...`
+- `app.js?v=...`
