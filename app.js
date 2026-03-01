@@ -1,19 +1,19 @@
 import { Tiktoken } from "https://esm.sh/js-tiktoken@1.0.21";
 import o200kBase from "https://esm.sh/js-tiktoken@1.0.21/ranks/o200k_base";
 
-const DURATION_SEC = 20;
+const DURATION_SEC = 10;
 const DURATION_MS = DURATION_SEC * 1000;
+const VOICE_FINALIZE_IDLE_MS = 220;
+const VOICE_FINALIZE_MAX_MS = 1200;
+const VOSK_MODEL_URL = "https://ccoreilly.github.io/vosk-browser/models/vosk-model-small-en-us-0.15.tar.gz";
+const VOSK_MODEL_SIZE_LABEL = "~40MB";
 
-const prompts = [
-  "In the old workshop, a single test run could take all afternoon, so every step mattered. We checked power rails twice, verified each pin against the schematic, and wrote down every observation in plain language. When something failed, we avoided guessing and traced one signal at a time until the behavior made sense. Speed was useful, but clarity was what saved us from repeating the same mistake tomorrow.",
-  "A strong typing session feels almost musical: steady tempo, light touch, and quick recovery when a note goes wrong. You do not pause to panic after a typo; you correct it cleanly and return to rhythm. Over twenty seconds, consistency beats bursts of chaos. The goal is not to be perfect in every keystroke, but to keep output flowing with minimal wasted motion and minimal backtracking.",
-  "Modern tools can measure performance in many ways, but each metric tells a different story. Final throughput shows what survived to the end, while editing activity reveals how much work happened behind the scenes. If two people produce similar final text, one may have done it with fewer corrections and less friction. Better technique often looks calm from the outside, even when it is moving very quickly.",
-  "When you practice deliberately, you can improve both speed and quality at the same time. Start with a comfortable pace, focus on accuracy, and only increase speed when your error rate stays controlled. Watch for tension in your shoulders and hands, because strain creates mistakes you cannot see at first. Small improvements in posture, rhythm, and confidence compound over many sessions into meaningful gains.",
-];
-
-const modeEl = document.getElementById("mode");
+const modeTextEl = document.getElementById("mode-text");
+const modeVoiceEl = document.getElementById("mode-voice");
 const shareEl = document.getElementById("share");
 const resetEl = document.getElementById("reset");
+const voiceStartEl = document.getElementById("voice-start");
+const voiceActionHintEl = document.getElementById("voice-action-hint");
 const metricTpsEl = document.getElementById("metric-tps");
 const metricTokensEl = document.getElementById("metric-tokens");
 const metricCpmEl = document.getElementById("metric-cpm");
@@ -21,9 +21,11 @@ const timerLabelEl = document.getElementById("timer-label");
 const timerEl = document.getElementById("timer");
 const statusEl = document.getElementById("status");
 const runtimeEl = document.querySelector(".runtime");
-const promptPanelEl = document.getElementById("prompt-panel");
-const promptTextEl = document.getElementById("prompt-text");
 const typingEl = document.getElementById("typing");
+const voicePanelEl = document.getElementById("voice-panel");
+const voicePanelTextEl = document.getElementById("voice-panel-text");
+const editorTabEl = document.getElementById("editor-tab");
+const editorModeBadgeEl = document.getElementById("editor-mode-badge");
 const editorEl = document.querySelector(".editor");
 const editorBodyEl = document.querySelector(".editor-body");
 const inputHighlightWrapEl = document.getElementById("input-highlight-wrap");
@@ -33,19 +35,35 @@ const tokenTooltipEl = document.getElementById("token-tooltip");
 
 let encoder = null;
 let encoderReady = false;
-let state = "idle"; // idle | running | finished
-let selectedMode = modeEl.value;
+let state = "idle"; // idle | running | recording | transcribing | finished
+let selectedMode = modeVoiceEl.checked ? "voice" : "text";
 let startTime = 0;
 let rafId = 0;
-let previousValue = "";
-let insertedTokenOps = 0;
-let deletedTokenOps = 0;
 let lastShareText = "";
+let runCounter = 0;
+let activeRunId = 0;
+let mediaStream = null;
+let audioContext = null;
+let mediaSourceNode = null;
+let recognizerNode = null;
+let voskModel = null;
+let voskModelPromise = null;
+let voskRecognizer = null;
+let voiceFinalSegments = [];
+let voicePartial = "";
+let voiceFinalizeTimeoutId = 0;
+let voiceLastUpdateAt = 0;
+let voiceModelLoading = false;
+
 const utf8Encoder = new TextEncoder();
 
 function setStatus(message, isError = false) {
   statusEl.textContent = message;
   statusEl.classList.toggle("error", isError);
+}
+
+function setVoicePanelText(message) {
+  voicePanelTextEl.textContent = message;
 }
 
 function formatSeconds(ms) {
@@ -56,49 +74,52 @@ function formatFloat(value, digits = 2) {
   return Number(value).toFixed(digits);
 }
 
-function choosePrompt() {
-  const pick = prompts[Math.floor(Math.random() * prompts.length)];
-  promptTextEl.textContent = pick;
+function isVoiceMode() {
+  return selectedMode === "voice";
+}
+
+function syncEditorChrome() {
+  if (selectedMode === "voice") {
+    editorTabEl.textContent = "voice-session.tw";
+    editorModeBadgeEl.textContent = "Voice input mode";
+  } else {
+    editorTabEl.textContent = "typing-session.tw";
+    editorModeBadgeEl.textContent = "Text input mode";
+  }
 }
 
 function syncModeUI() {
-  const isCopy = selectedMode === "copy";
-  promptPanelEl.classList.toggle("hidden", !isCopy);
-  if (isCopy) {
-    choosePrompt();
-  }
-}
+  const isVoice = isVoiceMode();
+  const showVoiceStart = isVoice && state === "idle";
 
-function tokenizeLength(text) {
-  if (!encoderReady || !text) {
-    return 0;
-  }
-  return encoder.encode(text).length;
-}
+  voiceStartEl.classList.toggle("hidden", !showVoiceStart);
+  voiceActionHintEl.classList.toggle("hidden", !isVoice);
+  if (isVoice) {
+    if (voiceModelLoading) {
+      voiceActionHintEl.textContent = "Loading voice model... please wait before speaking.";
+    } else if (state === "recording") {
+      voiceActionHintEl.textContent = "Listening now...";
+    } else if (state === "transcribing") {
+      voiceActionHintEl.textContent = "Wrapping up final words...";
+    } else if (voskModel) {
+      voiceActionHintEl.textContent = "Voice model ready.";
+    } else {
+      voiceActionHintEl.textContent = `First run downloads voice model (${VOSK_MODEL_SIZE_LABEL}).`;
+    }
 
-function diffStrings(previousText, currentText) {
-  if (previousText === currentText) {
-    return { added: "", removed: "" };
-  }
-
-  let start = 0;
-  const prevLen = previousText.length;
-  const currLen = currentText.length;
-  while (start < prevLen && start < currLen && previousText[start] === currentText[start]) {
-    start += 1;
-  }
-
-  let prevEnd = prevLen - 1;
-  let currEnd = currLen - 1;
-  while (prevEnd >= start && currEnd >= start && previousText[prevEnd] === currentText[currEnd]) {
-    prevEnd -= 1;
-    currEnd -= 1;
+    typingEl.classList.add("hidden");
+    if (state !== "finished") {
+      inputHighlightWrapEl.classList.add("hidden");
+      voicePanelEl.classList.remove("hidden");
+    }
+  } else {
+    voicePanelEl.classList.add("hidden");
+    if (state !== "finished") {
+      typingEl.classList.remove("hidden");
+    }
   }
 
-  return {
-    removed: previousText.slice(start, prevEnd + 1),
-    added: currentText.slice(start, currEnd + 1),
-  };
+  syncEditorChrome();
 }
 
 function resetPrimaryMetrics() {
@@ -110,7 +131,6 @@ function resetPrimaryMetrics() {
 function clearResults() {
   timerLabelEl.textContent = "Time left";
   timerEl.textContent = formatSeconds(DURATION_MS);
-  setStatus("Click in the editor and type to begin the 20-second run.");
   runtimeEl.classList.remove("results-mode");
 
   resetPrimaryMetrics();
@@ -127,6 +147,18 @@ function clearResults() {
   tokenIdRowEl.style.height = "";
   inputHighlightWrapEl.classList.add("hidden");
   typingEl.classList.remove("hidden");
+  voicePanelEl.classList.add("hidden");
+
+  if (isVoiceMode()) {
+    setStatus(`Press Start Recording to begin a ${DURATION_SEC}-second voice run.`);
+    setVoicePanelText(
+      `Voice mode ready. First run downloads a local model (${VOSK_MODEL_SIZE_LABEL}). Press Start Recording to begin a ${DURATION_SEC}-second run.`,
+    );
+    typingEl.classList.add("hidden");
+    voicePanelEl.classList.remove("hidden");
+  } else {
+    setStatus(`Click in the editor and type to begin the ${DURATION_SEC}-second run.`);
+  }
 }
 
 async function copyToClipboard(text) {
@@ -146,14 +178,15 @@ async function copyToClipboard(text) {
   document.body.removeChild(ta);
 }
 
-function buildShareText(tps, finalTokens, cpm, tokenOps, opsPerSec) {
-  const modeLabel = selectedMode === "copy" ? "copy-text" : "free-typing";
-  return [
+function buildShareText({ tps, finalTokens, cpm, modeLabel }) {
+  const lines = [
     "🚀 Human Token Benchmarker",
     `⚡ Tokens/s: ${formatFloat(tps)} | 🧱 Total tokens: ${finalTokens} | ✍️ Characters/minute: ${formatFloat(cpm, 0)}`,
-    `Mode: ${modeLabel} | Tokenizer: o200k_base | Duration: 20s`,
-    "🔗 https://georgemclaughlin.github.io/human-token-speed-test/",
-  ].join("\n");
+    `🧪 Mode: ${modeLabel} | Tokenizer: o200k_base | Duration: ${DURATION_SEC}s`,
+  ];
+
+  lines.push("🔗 https://georgemclaughlin.github.io/human-token-speed-test/");
+  return lines.join("\n");
 }
 
 async function handleShareClick() {
@@ -292,14 +325,8 @@ function fitResultEditorToContent() {
   const idsMin = 34;
   const idsMax = Math.max(180, Math.floor(viewportCap * 0.45));
 
-  const highlightTarget = Math.min(
-    Math.max(inputHighlightEl.scrollHeight + 2, highlightMin),
-    highlightMax,
-  );
-  const idsTarget = Math.min(
-    Math.max(tokenIdRowEl.scrollHeight + 2, idsMin),
-    idsMax,
-  );
+  const highlightTarget = Math.min(Math.max(inputHighlightEl.scrollHeight + 2, highlightMin), highlightMax);
+  const idsTarget = Math.min(Math.max(tokenIdRowEl.scrollHeight + 2, idsMin), idsMax);
 
   inputHighlightEl.style.height = `${highlightTarget}px`;
   tokenIdRowEl.style.height = `${idsTarget}px`;
@@ -308,33 +335,96 @@ function fitResultEditorToContent() {
 
 function setState(nextState) {
   state = nextState;
-  const canType = encoderReady && (nextState === "idle" || nextState === "running");
+  const typingRunnable = selectedMode !== "voice" && (nextState === "idle" || nextState === "running");
+  const voiceReady = selectedMode === "voice" && nextState === "idle" && encoderReady;
+  const modeLocked = nextState === "running" || nextState === "recording" || nextState === "transcribing";
 
-  modeEl.disabled = nextState === "running";
-  typingEl.disabled = !canType;
+  modeTextEl.disabled = modeLocked;
+  modeVoiceEl.disabled = modeLocked;
+  typingEl.disabled = !encoderReady || !typingRunnable;
+  voiceStartEl.disabled = !voiceReady;
 
   if (nextState === "idle") {
     timerEl.textContent = formatSeconds(DURATION_MS);
   }
+
+  syncModeUI();
+}
+
+function stopMediaTracks() {
+  if (mediaStream) {
+    for (const track of mediaStream.getTracks()) {
+      track.stop();
+    }
+  }
+  mediaStream = null;
+}
+
+function cleanupVoiceResources() {
+  if (recognizerNode) {
+    recognizerNode.onaudioprocess = null;
+    try {
+      recognizerNode.disconnect();
+    } catch (error) {
+      console.error(error);
+    }
+  }
+  recognizerNode = null;
+
+  if (mediaSourceNode) {
+    try {
+      mediaSourceNode.disconnect();
+    } catch (error) {
+      console.error(error);
+    }
+  }
+  mediaSourceNode = null;
+
+  stopMediaTracks();
+
+  if (audioContext) {
+    try {
+      audioContext.close();
+    } catch (error) {
+      console.error(error);
+    }
+  }
+  audioContext = null;
+
+  if (voskRecognizer) {
+    try {
+      voskRecognizer.remove();
+    } catch (error) {
+      console.error(error);
+    }
+  }
+  voskRecognizer = null;
+  voiceFinalSegments = [];
+  voicePartial = "";
 }
 
 function resetRun() {
+  runCounter += 1;
+  activeRunId = runCounter;
+
   if (rafId) {
     cancelAnimationFrame(rafId);
     rafId = 0;
   }
+  if (voiceFinalizeTimeoutId) {
+    clearTimeout(voiceFinalizeTimeoutId);
+    voiceFinalizeTimeoutId = 0;
+  }
 
+  cleanupVoiceResources();
   startTime = 0;
-  previousValue = "";
-  insertedTokenOps = 0;
-  deletedTokenOps = 0;
   typingEl.value = "";
   clearResults();
   syncModeUI();
   setState("idle");
 }
 
-function finishRun() {
+function finishWithText(finalText, sourceLabel, warningMessage = "") {
   if (rafId) {
     cancelAnimationFrame(rafId);
     rafId = 0;
@@ -343,16 +433,20 @@ function finishRun() {
   setState("finished");
   typingEl.blur();
 
-  const finalText = typingEl.value;
   const finalChars = finalText.length;
   const finalTokenIds = encoder.encode(finalText);
   const finalTokens = finalTokenIds.length;
-
   const tps = finalTokens / DURATION_SEC;
   const cpm = (finalChars / DURATION_SEC) * 60;
-  const tokenOps = insertedTokenOps + deletedTokenOps;
-  const opsPerSec = tokenOps / DURATION_SEC;
-  lastShareText = buildShareText(tps, finalTokens, cpm, tokenOps, opsPerSec);
+
+  const modeLabel = selectedMode === "voice" ? "voice" : "text";
+
+  lastShareText = buildShareText({
+    tps,
+    finalTokens,
+    cpm,
+    modeLabel,
+  });
   shareEl.disabled = false;
   shareEl.classList.remove("hidden");
 
@@ -363,36 +457,133 @@ function finishRun() {
   timerLabelEl.textContent = "Final result";
   timerEl.textContent = `${formatFloat(tps)} tokens/s`;
   statusEl.innerHTML =
-    `<span class="result-line"><strong>Run complete.</strong> You produced ${finalTokens} final tokens in 20 seconds.</span>` +
-    `<span class="result-line"><strong>Pace snapshot:</strong> ${formatFloat(cpm, 0)} characters/minute at ${formatFloat(tps)} tokens/s using o200k_base.</span>`;
+    `<span class="result-line"><strong>Run complete.</strong> ${sourceLabel} produced ${finalTokens} tokens in ${DURATION_SEC} seconds.</span>` +
+    `<span class="result-line"><strong>Pace snapshot:</strong> ${formatFloat(cpm, 0)} characters/minute at ${formatFloat(tps)} tokens/s with o200k_base.</span>` +
+    (warningMessage
+      ? `<span class="result-line"><strong>Note:</strong> ${warningMessage}</span>`
+      : "");
   statusEl.classList.remove("error");
   runtimeEl.classList.add("results-mode");
 
   renderTokenHighlight(finalTokenIds);
   typingEl.classList.add("hidden");
+  voicePanelEl.classList.add("hidden");
   inputHighlightWrapEl.classList.remove("hidden");
   fitResultEditorToContent();
 }
 
+function finishTypingRun() {
+  finishWithText(typingEl.value, "Final text");
+}
+
+function normalizeTranscript(text) {
+  return String(text ?? "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function finalizeVoiceRun() {
+  const transcript = normalizeTranscript([...voiceFinalSegments, voicePartial].filter(Boolean).join(" "));
+  voiceFinalSegments = [];
+  voicePartial = "";
+
+  if (!transcript) {
+    setState("idle");
+    clearResults();
+    setStatus("No speech detected during the run. Try again and speak clearly.", true);
+    setVoicePanelText("No speech detected. Press Start Recording to try again.");
+    return;
+  }
+
+  finishWithText(transcript, "Voice transcript");
+}
+
+function ensureVoskAvailable() {
+  return Boolean(window.Vosk && typeof window.Vosk.createModel === "function");
+}
+
+async function loadVoskModel() {
+  if (voskModel) {
+    return voskModel;
+  }
+
+  if (!ensureVoskAvailable()) {
+    throw new Error("Vosk runtime is not available.");
+  }
+
+  if (!voskModelPromise) {
+    voiceModelLoading = true;
+    syncModeUI();
+    voskModelPromise = window.Vosk.createModel(VOSK_MODEL_URL)
+      .then((model) => {
+        voskModel = model;
+        voiceModelLoading = false;
+        syncModeUI();
+        return model;
+      })
+      .catch((error) => {
+        voskModelPromise = null;
+        voiceModelLoading = false;
+        syncModeUI();
+        throw error;
+      });
+  }
+
+  return voskModelPromise;
+}
+
+function stopVoiceRecording() {
+  if (rafId) {
+    cancelAnimationFrame(rafId);
+    rafId = 0;
+  }
+
+  timerEl.textContent = formatSeconds(0);
+  setState("transcribing");
+  setStatus("Finalizing transcript...");
+  setVoicePanelText(`Wrapping up final words (up to ${(VOICE_FINALIZE_MAX_MS / 1000).toFixed(1)}s)...`);
+  const runId = activeRunId;
+  const startedAt = performance.now();
+  const pollFinalize = () => {
+    if (runId !== activeRunId) {
+      return;
+    }
+    const now = performance.now();
+    const idleForMs = now - voiceLastUpdateAt;
+    const elapsedMs = now - startedAt;
+    if (idleForMs >= VOICE_FINALIZE_IDLE_MS || elapsedMs >= VOICE_FINALIZE_MAX_MS) {
+      voiceFinalizeTimeoutId = 0;
+      finalizeVoiceRun();
+      cleanupVoiceResources();
+      return;
+    }
+    voiceFinalizeTimeoutId = window.setTimeout(pollFinalize, 120);
+  };
+  voiceFinalizeTimeoutId = window.setTimeout(pollFinalize, 120);
+}
+
 function tick() {
-  if (state !== "running") {
+  if (state !== "running" && state !== "recording") {
     return;
   }
 
   const elapsedMs = performance.now() - startTime;
   const remainingMs = DURATION_MS - elapsedMs;
-
   timerEl.textContent = formatSeconds(remainingMs);
 
   if (remainingMs <= 0) {
-    finishRun();
+    if (state === "running") {
+      finishTypingRun();
+    } else {
+      stopVoiceRecording();
+    }
     return;
   }
 
   rafId = requestAnimationFrame(tick);
 }
 
-function beginRun() {
+function beginTypingRun() {
   if (state !== "idle") {
     return;
   }
@@ -403,36 +594,124 @@ function beginRun() {
   rafId = requestAnimationFrame(tick);
 }
 
-function handleInput() {
-  if (state === "idle") {
-    beginRun();
-  }
-
-  if (state !== "running") {
-    previousValue = typingEl.value;
+async function beginVoiceRun() {
+  if (state !== "idle" || !isVoiceMode()) {
     return;
   }
 
-  const currentValue = typingEl.value;
-  const { added, removed } = diffStrings(previousValue, currentValue);
-
-  if (added) {
-    insertedTokenOps += tokenizeLength(added);
-  }
-  if (removed) {
-    deletedTokenOps += tokenizeLength(removed);
+  if (!navigator.mediaDevices?.getUserMedia || typeof AudioContext === "undefined") {
+    setStatus("Voice mode is not supported in this browser.", true);
+    setVoicePanelText("Voice mode requires getUserMedia + AudioContext support.");
+    return;
   }
 
-  previousValue = currentValue;
+  if (!ensureVoskAvailable()) {
+    setStatus("Voice runtime failed to load. Refresh and try again.", true);
+    setVoicePanelText("Vosk runtime unavailable. Refresh the page to retry.");
+    return;
+  }
+
+  const runId = ++runCounter;
+  activeRunId = runId;
+  voiceFinalSegments = [];
+  voicePartial = "";
+  voiceLastUpdateAt = performance.now();
+
+  setStatus("Loading local speech model...");
+  setVoicePanelText("Loading Vosk model in-browser...");
+  setState("recording");
+
+  try {
+    const model = await loadVoskModel();
+    if (runId !== activeRunId) {
+      return;
+    }
+
+    setStatus("Requesting microphone permission...");
+    setVoicePanelText(`Allow microphone access, then speak for ${DURATION_SEC} seconds.`);
+
+    mediaStream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        channelCount: 1,
+        echoCancellation: true,
+        noiseSuppression: true,
+        sampleRate: 48000,
+      },
+    });
+    if (runId !== activeRunId) {
+      cleanupVoiceResources();
+      return;
+    }
+
+    audioContext = new AudioContext();
+    await audioContext.resume();
+    mediaSourceNode = audioContext.createMediaStreamSource(mediaStream);
+
+    voskRecognizer = new model.KaldiRecognizer(audioContext.sampleRate);
+    voskRecognizer.setWords(true);
+    voskRecognizer.on("result", (message) => {
+      if (runId !== activeRunId) {
+        return;
+      }
+      voiceLastUpdateAt = performance.now();
+      const text = normalizeTranscript(message?.result?.text ?? "");
+      if (text) {
+        voiceFinalSegments.push(text);
+      }
+    });
+    voskRecognizer.on("partialresult", (message) => {
+      if (runId !== activeRunId) {
+        return;
+      }
+      voiceLastUpdateAt = performance.now();
+      voicePartial = normalizeTranscript(message?.result?.partial ?? "");
+    });
+
+    recognizerNode = audioContext.createScriptProcessor(4096, 1, 1);
+    recognizerNode.onaudioprocess = (event) => {
+      if (runId !== activeRunId || (state !== "recording" && state !== "transcribing")) {
+        return;
+      }
+      try {
+        voskRecognizer.acceptWaveform(event.inputBuffer);
+      } catch (error) {
+        console.error("acceptWaveform failed", error);
+      }
+    };
+    mediaSourceNode.connect(recognizerNode);
+    recognizerNode.connect(audioContext.destination);
+
+    startTime = performance.now();
+    timerLabelEl.textContent = "Time left";
+    setStatus("Recording... speak now until the timer ends.");
+    setVoicePanelText(`Recording... speak continuously for ${DURATION_SEC} seconds.`);
+    rafId = requestAnimationFrame(tick);
+  } catch (error) {
+    console.error(error);
+    cleanupVoiceResources();
+    setState("idle");
+    setStatus("Voice recognition setup failed. Check microphone permissions and retry.", true);
+    setVoicePanelText("Voice setup failed. Press Start Recording to retry.");
+  }
 }
 
-modeEl.addEventListener("change", () => {
-  selectedMode = modeEl.value;
-  syncModeUI();
-});
+function handleInput() {
+  if (state === "idle") {
+    beginTypingRun();
+  }
+}
+
+function handleModeChange() {
+  selectedMode = modeVoiceEl.checked ? "voice" : "text";
+  resetRun();
+}
+
+modeTextEl.addEventListener("change", handleModeChange);
+modeVoiceEl.addEventListener("change", handleModeChange);
 
 shareEl.addEventListener("click", handleShareClick);
 resetEl.addEventListener("click", resetRun);
+voiceStartEl.addEventListener("click", beginVoiceRun);
 typingEl.addEventListener("input", handleInput);
 inputHighlightWrapEl.addEventListener("mousemove", handleTokenHoverMove);
 inputHighlightWrapEl.addEventListener("mouseleave", hideTokenTooltip);
@@ -456,7 +735,6 @@ async function init() {
     encoder = new Tiktoken(o200kBase);
     encoderReady = true;
     clearResults();
-    setStatus("Tokenizer ready. Click in the editor and start typing.");
     setState("idle");
     typingEl.focus();
   } catch (error) {
@@ -465,7 +743,9 @@ async function init() {
     setStatus("Failed to load tokenizer. Check network and refresh.", true);
     state = "finished";
     typingEl.disabled = true;
-    modeEl.disabled = false;
+    modeTextEl.disabled = false;
+    modeVoiceEl.disabled = false;
+    voiceStartEl.disabled = true;
   }
 }
 
