@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Human Token Benchmarker</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Space+Grotesk:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="topbar panel">
+        <div class="title-wrap">
+          <h1>Human Token Benchmarker</h1>
+          <p class="subtitle">20-second typing benchmark to compare your pace with model-like token throughput.</p>
+        </div>
+        <p class="tokenizer-caption">Tokenization: <code>o200k_base</code></p>
+      </header>
+
+      <section class="controlbar panel" aria-label="Test controls">
+        <div class="control-group">
+          <label for="mode">Mode</label>
+          <select id="mode" name="mode">
+            <option value="free">Free typing</option>
+            <option value="copy">Copy text</option>
+          </select>
+          <button id="reset" type="button">Reset</button>
+        </div>
+      </section>
+
+      <section class="metrics panel" aria-label="Primary metrics">
+        <article class="metric-tile">
+          <span class="metric-label">Tokens/sec (TPS)</span>
+          <strong id="metric-tps" class="metric-value">0.00</strong>
+        </article>
+        <article class="metric-tile">
+          <span class="metric-label">Total Tokens</span>
+          <strong id="metric-tokens" class="metric-value">0</strong>
+        </article>
+        <article class="metric-tile">
+          <span class="metric-label">Chars/min (CPM)</span>
+          <strong id="metric-cpm" class="metric-value">0</strong>
+        </article>
+      </section>
+
+      <section class="runtime panel" aria-label="Run status">
+        <div class="runtime-left">
+          <span id="timer-label" class="runtime-label">Time left</span>
+          <span id="timer" class="runtime-value" aria-live="polite">20.0s</span>
+        </div>
+        <div id="status" class="runtime-details">Loading tokenizer...</div>
+      </section>
+
+      <section id="prompt-panel" class="prompt panel hidden" aria-label="Reference prompt">
+        <div class="prompt-header">Reference prompt</div>
+        <p id="prompt-text"></p>
+      </section>
+
+      <section class="editor panel" aria-label="Typing area">
+        <div class="editor-chrome">
+          <span class="dot dot-red"></span>
+          <span class="dot dot-amber"></span>
+          <span class="dot dot-green"></span>
+          <span class="editor-tab">typing-session.tw</span>
+        </div>
+        <div class="editor-body">
+          <textarea
+            id="typing"
+            rows="9"
+            placeholder="Click here and start typing. Timer starts on first keystroke."
+            disabled
+          ></textarea>
+          <div id="input-highlight-wrap" class="hidden">
+            <pre id="input-highlight" class="token-highlight"></pre>
+            <pre id="token-id-row" class="token-id-row"></pre>
+          </div>
+        </div>
+      </section>
+    </main>
+    <div id="token-tooltip" class="token-tooltip hidden" role="tooltip" aria-hidden="true"></div>
+
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>
